@@ -1,0 +1,365 @@
+apiVersion: v1
+kind: Template
+metadata:
+  annotations:
+    description: Creates a WordPress installation with separate MySQL database instance.
+      Plugins, themes and language files are incorporated from a source code repository.
+      Requires that two persistent volumes be available. If a ReadWriteMany persistent
+      volume type is available and used, WordPress can be scaled to multiple replicas
+      and the deployment strategy switched to Rolling to permit rolling deployments
+      on restarts.
+    iconClass: icon-php
+    openshift.io/display-name: WordPress (Classic / Repository)
+    tags: quickstart,php,wordpress
+  creationTimestamp: null
+  name: wordpress-classic-repository
+objects:
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}-s2i
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}-s2i
+  spec:
+    output:
+      imageLabels:
+      - name: io.k8s.display-name
+        value: WordPress
+      - name: io.k8s.description
+        value: WordPress application and S2I builder.
+      - name: io.openshift.s2i.scripts-url
+        value: image:///opt/app-root/s2i
+      - name: io.s2i.scripts-url
+        value: image:///opt/app-root/s2i
+      - name: io.openshift.tags
+        value: builder,php,wordpress
+      to:
+        kind: ImageStreamTag
+        name: ${APPLICATION_NAME}-s2i:latest
+    source:
+      git:
+        uri: ${QUICKSTART_REPOSITORY_URL}
+      type: Git
+    strategy:
+      sourceStrategy:
+        from:
+          kind: ImageStreamTag
+          name: php:${PHP_VERSION}
+          namespace: openshift
+      type: Source
+    triggers:
+    - type: ConfigChange
+    - type: ImageChange
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}-img
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}-img
+  spec:
+    output:
+      to:
+        kind: ImageStreamTag
+        name: ${APPLICATION_NAME}-img:latest
+    source:
+      git:
+        ref: ${SOURCE_REPOSITORY_TAG}
+        uri: ${SOURCE_REPOSITORY_URL}
+      type: Git
+    strategy:
+      sourceStrategy:
+        from:
+          kind: ImageStreamTag
+          name: ${APPLICATION_NAME}-s2i:latest
+      type: Source
+    triggers:
+    - type: ConfigChange
+    - type: ImageChange
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}
+  spec:
+    replicas: 1
+    selector:
+      app: ${APPLICATION_NAME}
+      deploymentconfig: ${APPLICATION_NAME}
+    strategy:
+      type: ${WORDPRESS_DEPLOYMENT_STRATEGY}
+    template:
+      metadata:
+        labels:
+          app: ${APPLICATION_NAME}
+          deploymentconfig: ${APPLICATION_NAME}
+      spec:
+        containers:
+        - env:
+          - name: MYSQL_DATABASE
+            value: wordpress
+          - name: MYSQL_USER
+            value: ${DATABASE_USERNAME}
+          - name: MYSQL_PASSWORD
+            value: ${DATABASE_PASSWORD}
+          - name: MYSQL_HOST
+            value: ${APPLICATION_NAME}-db
+          - name: MYSQL_TABLE_PREFIX
+            value: wp_
+          image: ${APPLICATION_NAME}-img
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              httpHeaders:
+              - name: X-Forwarded-Proto
+                value: https
+              path: /wp-admin/install.php
+              port: 8080
+              scheme: HTTP
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          name: wordpress
+          ports:
+          - containerPort: 8080
+            protocol: TCP
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              httpHeaders:
+              - name: X-Forwarded-Proto
+                value: https
+              path: /wp-admin/install.php
+              port: 8080
+              scheme: HTTP
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          resources:
+            limits:
+              memory: ${WORDPRESS_MEMORY_LIMIT}
+          volumeMounts:
+          - mountPath: /opt/app-root/src
+            name: data
+        volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: ${APPLICATION_NAME}-wordpress-data
+    triggers:
+    - type: ConfigChange
+    - imageChangeParams:
+        automatic: true
+        containerNames:
+        - wordpress
+        from:
+          kind: ImageStreamTag
+          name: ${APPLICATION_NAME}-img:latest
+      type: ImageChange
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}-db
+  spec:
+    replicas: 1
+    selector:
+      app: ${APPLICATION_NAME}
+      deploymentconfig: ${APPLICATION_NAME}-db
+    strategy:
+      type: Recreate
+    template:
+      metadata:
+        labels:
+          app: ${APPLICATION_NAME}
+          deploymentconfig: ${APPLICATION_NAME}-db
+      spec:
+        containers:
+        - env:
+          - name: MYSQL_DATABASE
+            value: wordpress
+          - name: MYSQL_USER
+            value: ${DATABASE_USERNAME}
+          - name: MYSQL_PASSWORD
+            value: ${DATABASE_PASSWORD}
+          image: mysql
+          livenessProbe:
+            initialDelaySeconds: 30
+            tcpSocket:
+              port: 3306
+            timeoutSeconds: 1
+          name: mysql
+          ports:
+          - containerPort: 3306
+            protocol: TCP
+          readinessProbe:
+            exec:
+              command:
+              - /bin/sh
+              - -i
+              - -c
+              - MYSQL_PWD="$MYSQL_PASSWORD" mysql -h 127.0.0.1 -u $MYSQL_USER -D $MYSQL_DATABASE
+                -e 'SELECT 1'
+            initialDelaySeconds: 5
+            timeoutSeconds: 1
+          resources:
+            limits:
+              memory: ${DATABASE_MEMORY_LIMIT}
+          volumeMounts:
+          - mountPath: /var/lib/mysql/data
+            name: data
+        volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: ${APPLICATION_NAME}-mysql-data
+    triggers:
+    - type: ConfigChange
+    - imageChangeParams:
+        automatic: true
+        containerNames:
+        - mysql
+        from:
+          kind: ImageStreamTag
+          name: mysql:${MYSQL_VERSION}
+          namespace: openshift
+      type: ImageChange
+- apiVersion: v1
+  kind: Service
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}
+  spec:
+    ports:
+    - name: 8080-tcp
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+    selector:
+      app: ${APPLICATION_NAME}
+      deploymentconfig: ${APPLICATION_NAME}
+- apiVersion: v1
+  kind: Service
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}-db
+  spec:
+    ports:
+    - name: 3306-tcp
+      port: 3306
+      protocol: TCP
+      targetPort: 3306
+    selector:
+      app: ${APPLICATION_NAME}
+      deploymentconfig: ${APPLICATION_NAME}-db
+- apiVersion: v1
+  kind: Route
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}
+  spec:
+    host: ""
+    port:
+      targetPort: 8080
+    tls:
+      insecureEdgeTerminationPolicy: Allow
+      termination: edge
+    to:
+      kind: Service
+      name: ${APPLICATION_NAME}
+      weight: 100
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}-mysql-data
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: ${DATABASE_VOLUME_SIZE}
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    labels:
+      app: ${APPLICATION_NAME}
+    name: ${APPLICATION_NAME}-wordpress-data
+  spec:
+    accessModes:
+    - ${WORDPRESS_VOLUME_TYPE}
+    resources:
+      requests:
+        storage: ${WORDPRESS_VOLUME_SIZE}
+parameters:
+- description: The name of the WordPress instance.
+  from: '[a-zA-Z0-9]'
+  name: APPLICATION_NAME
+  required: true
+  value: my-wordpress-site
+- description: The URL of the quickstart Git repository.
+  name: QUICKSTART_REPOSITORY_URL
+  required: true
+  value: https://github.com/openshift-evangelists/wordpress-quickstart
+- description: The source repository containing plugins, themes and language files.
+  name: SOURCE_REPOSITORY_URL
+  required: true
+- description: The tagged version of the source repository to use.
+  name: SOURCE_REPOSITORY_TAG
+  required: true
+  value: master
+- description: Size of the persistent volume for Wordpress.
+  name: WORDPRESS_VOLUME_SIZE
+  required: true
+  value: 1Gi
+- description: Type of the persistent volume for Wordpress.
+  name: WORDPRESS_VOLUME_TYPE
+  required: true
+  value: ReadWriteOnce
+- description: Type of the deployment strategy for Wordpress.
+  name: WORDPRESS_DEPLOYMENT_STRATEGY
+  required: true
+  value: Recreate
+- description: Amount of memory available to WordPress.
+  name: WORDPRESS_MEMORY_LIMIT
+  required: true
+  value: 512Mi
+- description: Size of the persistent volume for the database.
+  name: DATABASE_VOLUME_SIZE
+  required: true
+  value: 1Gi
+- description: Amount of memory available to the database.
+  name: DATABASE_MEMORY_LIMIT
+  required: true
+  value: 512Mi
+- description: The name of the database user.
+  from: user[a-f0-9]{8}
+  generate: expression
+  name: DATABASE_USERNAME
+- description: The password for the database user.
+  from: '[a-zA-Z0-9]{12}'
+  generate: expression
+  name: DATABASE_PASSWORD
+- description: The version of the MySQL database.
+  name: MYSQL_VERSION
+  required: true
+  value: "5.7"
+- description: The version of the PHP builder.
+  name: PHP_VERSION
+  required: true
+  value: "7.0"
