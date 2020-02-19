@@ -87,34 +87,10 @@ objects:
           - name: MYSQL_TABLE_PREFIX
             value: wp_
           image: ${APPLICATION_NAME}-img
-          livenessProbe:
-            failureThreshold: 3
-            httpGet:
-              httpHeaders:
-              - name: X-Forwarded-Proto
-                value: https
-              path: /wp-admin/install.php
-              port: 8080
-              scheme: HTTP
-            periodSeconds: 10
-            successThreshold: 1
-            timeoutSeconds: 1
           name: wordpress
           ports:
           - containerPort: 8080
             protocol: TCP
-          readinessProbe:
-            failureThreshold: 3
-            httpGet:
-              httpHeaders:
-              - name: X-Forwarded-Proto
-                value: https
-              path: /wp-admin/install.php
-              port: 8080
-              scheme: HTTP
-            periodSeconds: 10
-            successThreshold: 1
-            timeoutSeconds: 1
           resources:
             limits:
               memory: ${WORDPRESS_MEMORY_LIMIT}
@@ -163,25 +139,10 @@ objects:
           - name: MYSQL_PASSWORD
             value: ${DATABASE_PASSWORD}
           image: mysql
-          livenessProbe:
-            initialDelaySeconds: 30
-            tcpSocket:
-              port: 3306
-            timeoutSeconds: 1
           name: mysql
           ports:
           - containerPort: 3306
             protocol: TCP
-          readinessProbe:
-            exec:
-              command:
-              - /bin/sh
-              - -i
-              - -c
-              - MYSQL_PWD="$MYSQL_PASSWORD" mysql -h 127.0.0.1 -u $MYSQL_USER -D $MYSQL_DATABASE
-                -e 'SELECT 1'
-            initialDelaySeconds: 5
-            timeoutSeconds: 1
           resources:
             limits:
               memory: ${DATABASE_MEMORY_LIMIT}
